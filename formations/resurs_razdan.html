@@ -521,7 +521,7 @@ const FOOT_SWATH_KM = 12;
 const FOOT_SWATH_BY_NORAD = new Map([
   [59371, 38], [62430, 38], // Resurs-P Geoton-L1
 ]);
-const FOOT_MAX_OFF_NADIR = 35;
+const FOOT_MAX_OFF_NADIR = 40;
 
 function footSwathKmFor(norad) {
   return FOOT_SWATH_BY_NORAD.get(norad) ?? FOOT_SWATH_KM;
