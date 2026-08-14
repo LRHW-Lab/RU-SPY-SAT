@@ -266,26 +266,55 @@ function geodeticToVector3(latDeg, lonDeg, altitudeKm, scale) {
   return { x: r * cosLat * Math.cos(lon), y: r * Math.sin(lat), z: -r * cosLat * Math.sin(lon) };
 }
 
-function subsolarPoint(date) {
-  const day = date.getTime() / 86400000 - 10957.5;
-  const lon = wrapLon((day - Math.floor(day)) * 360 - 180);
-  const decl = 23.44 * DEG * Math.sin((2 * Math.PI * (284 + day)) / 365.25);
-  return { lat: decl * RAD, lon };
+/** NOAA simplified solar position (GML solareqns.PDF) + Wikipedia subsolar point */
+function utcDecimalHours(date) {
+  return date.getUTCHours() + date.getUTCMinutes() / 60 + date.getUTCSeconds() / 3600 + date.getUTCMilliseconds() / 3600000;
 }
 
-/** 地面点是否处于白昼（与 guerillamap 地球昼夜分界同源：dot(n, sun) > 0.05） */
+function dayOfYearFraction(date) {
+  const start = Date.UTC(date.getUTCFullYear(), 0, 1);
+  return (date.getTime() - start) / 86400000 + 1;
+}
+
+function noaaSolarGamma(date) {
+  const ut = utcDecimalHours(date);
+  const n = dayOfYearFraction(date);
+  return (2 * Math.PI / 365) * (n - 1 + (ut - 12) / 24);
+}
+
+function noaaEqTimeMinutes(gamma) {
+  return 229.18 * (0.000075 + 0.001868 * Math.cos(gamma) - 0.032077 * Math.sin(gamma)
+    - 0.014615 * Math.cos(2 * gamma) - 0.040849 * Math.sin(2 * gamma));
+}
+
+function noaaDeclinationRad(gamma) {
+  return 0.006918 - 0.399912 * Math.cos(gamma) + 0.070257 * Math.sin(gamma)
+    - 0.006758 * Math.cos(2 * gamma) + 0.000907 * Math.sin(2 * gamma)
+    - 0.002697 * Math.cos(3 * gamma) + 0.00148 * Math.sin(3 * gamma);
+}
+
+function subsolarPoint(date) {
+  const gamma = noaaSolarGamma(date);
+  const eqMin = noaaEqTimeMinutes(gamma);
+  const declRad = noaaDeclinationRad(gamma);
+  const ut = utcDecimalHours(date);
+  const lon = wrapLon(-15 * (ut - 12 + eqMin / 60));
+  return { lat: declRad * RAD, lon };
+}
+
+/** 地面点是否处于白昼（dot(n, sun) > threshold；坐标系与 geodeticToVector3 一致） */
 function isGroundSunlit(latDeg, lonDeg, date, threshold = 0.05) {
   const sub = subsolarPoint(date);
   const lat = latDeg * DEG;
   const lon = lonDeg * DEG;
-  const nx = Math.cos(lat) * Math.cos(lon);
-  const ny = Math.sin(lat);
-  const nz = Math.cos(lat) * Math.sin(lon);
   const slat = sub.lat * DEG;
   const slon = sub.lon * DEG;
+  const nx = Math.cos(lat) * Math.cos(lon);
+  const ny = Math.sin(lat);
+  const nz = -Math.cos(lat) * Math.sin(lon);
   const sx = Math.cos(slat) * Math.cos(slon);
   const sy = Math.sin(slat);
-  const sz = Math.cos(slat) * Math.sin(slon);
+  const sz = -Math.cos(slat) * Math.sin(slon);
   return nx * sx + ny * sy + nz * sz > threshold;
 }
 
