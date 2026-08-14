@@ -1173,11 +1173,18 @@ function expField(n) {
   return `${sign}${String(Math.round(mant * 1e5)).padStart(5, '0')}${exp < 0 ? '-' : '+'}${Math.abs(exp)}`;
 }
 
+function objectIdTleField(objectId) {
+  const s = String(objectId || '').trim();
+  const m = s.match(/^(\d{4})-(\d{3})([A-Z]?)$/i);
+  if (m) return `${m[1].slice(-2)}${m[2]}${(m[3] || '').toUpperCase()}`.padEnd(8);
+  return s.replace(/-/g, '').padEnd(8).slice(0, 8);
+}
+
 function ommToTle(o) {
   const id = String((Number(o.NORAD_CAT_ID) || 0) % 100000).padStart(5, '0');
-  const obj = String(o.OBJECT_ID || '').replace('-', '').padEnd(8).slice(0, 8);
+  const obj = objectIdTleField(o.OBJECT_ID);
   const yy = String(utcDate(o.EPOCH).getUTCFullYear()).slice(-2);
-  const l1 = `1 ${id}U ${obj} ${yy}${epochDay(o.EPOCH)}  .00000000  00000-0 ${expField(Number(o.BSTAR))} 0  999`;
+  const l1 = `1 ${id}U ${obj}${yy}${epochDay(o.EPOCH)}  .00000000  00000-0 ${expField(Number(o.BSTAR))} 0  999`;
   const ecc = String(Math.round(Number(o.ECCENTRICITY) * 1e7)).padStart(7, '0').slice(-7);
   const f = (n) => Number(n).toFixed(4).padStart(8, ' ');
   const l2 = `2 ${id} ${f(o.INCLINATION)} ${f(o.RA_OF_ASC_NODE)} ${ecc} ${f(o.ARG_OF_PERICENTER)} ${f(o.MEAN_ANOMALY)} ${Number(o.MEAN_MOTION).toFixed(8).padStart(11, ' ')}${String(o.REV_AT_EPOCH || 0).padStart(5, ' ')}`;
@@ -1191,6 +1198,27 @@ async function fetchGp(query, signal) {
   return Array.isArray(data) ? data : [data];
 }
 
+const GP_FETCH_TIMEOUT_MS = 60000;
+const GP_FETCH_CONCURRENCY = 8;
+
+async function fetchGpByNorad(ids, signal) {
+  const rows = [];
+  let failures = 0;
+  for (let i = 0; i < ids.length; i += GP_FETCH_CONCURRENCY) {
+    const chunk = ids.slice(i, i + GP_FETCH_CONCURRENCY);
+    const parts = await Promise.all(chunk.map(async (id) => {
+      try {
+        return await fetchGp(`CATNR=${id}`, signal);
+      } catch (err) {
+        failures++;
+        return [];
+      }
+    }));
+    rows.push(...parts.flat());
+  }
+  return { rows, failures };
+}
+
 function setTleStatus(text) {
   const el = document.getElementById('tle-status');
   if (el) el.textContent = text;
@@ -1198,28 +1226,21 @@ function setTleStatus(text) {
 
 async function loadLiveTleMap(entries) {
   const wanted = new Set(entries.map((e) => Number(e.norad)).filter(Number.isFinite));
-  const launches = [...new Set(entries.map((e) => launchKey(e.intldes)).filter(Boolean))];
+  const ids = [...wanted];
+  if (!ids.length) return { map: new Map(), failures: 0 };
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 25000);
-  const byNorad = new Map();
+  const timer = setTimeout(() => controller.abort(), GP_FETCH_TIMEOUT_MS);
   try {
-    const batches = await Promise.all(launches.map((id) => fetchGp(`INTDES=${encodeURIComponent(id)}`, controller.signal).catch(() => [])));
-    for (const row of batches.flat()) {
+    const { rows, failures } = await fetchGpByNorad(ids, controller.signal);
+    const byNorad = new Map();
+    for (const row of rows) {
       const id = Number(row.NORAD_CAT_ID);
       if (wanted.has(id) && Number.isFinite(Number(row.MEAN_MOTION))) byNorad.set(id, row);
     }
-    const missing = [...wanted].filter((id) => !byNorad.has(id));
-    if (missing.length) {
-      const extra = await Promise.all(missing.map((id) => fetchGp(`CATNR=${id}`, controller.signal).catch(() => [])));
-      for (const row of extra.flat()) {
-        const id = Number(row.NORAD_CAT_ID);
-        if (wanted.has(id) && Number.isFinite(Number(row.MEAN_MOTION))) byNorad.set(id, row);
-      }
-    }
+    return { map: byNorad, failures };
   } finally {
     clearTimeout(timer);
   }
-  return byNorad;
 }
 
 function applyLiveTle(tleMap) {
@@ -1245,9 +1266,17 @@ async function refreshLiveTle() {
   if (!entries.length) return;
   setTleStatus('正在获取 CelesTrak 最新轨道…');
   try {
-    const map = await loadLiveTleMap(entries);
+    const { map, failures } = await loadLiveTleMap(entries);
     const n = applyLiveTle(map);
-    setTleStatus(n ? `CelesTrak 实时 · 已更新 ${n} 颗` : 'CelesTrak 无匹配，使用内置 TLE');
+    if (n) {
+      setTleStatus(n === entries.length
+        ? `CelesTrak 实时 · 已更新 ${n} 颗`
+        : `CelesTrak 实时 · 已更新 ${n}/${entries.length} 颗`);
+    } else if (failures) {
+      setTleStatus('轨道更新失败，使用内置 TLE');
+    } else {
+      setTleStatus('CelesTrak 无匹配，使用内置 TLE');
+    }
   } catch (err) {
     setTleStatus('轨道更新失败，使用内置 TLE');
     console.warn(err);
