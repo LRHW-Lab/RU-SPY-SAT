@@ -727,20 +727,11 @@ const COV_ALT_KM = 2.0;
 const COV_REBUILD_MS = 300;
 const COV_MAX_GAP_MS = 15 * 60 * 1000;
 const COV_STEP_RATIO = 1.02;
-const COV_MAX_SAMPLES = 180;
-const MAX_FRAME_DELTA_MS = 50;
 
 let covLastRebuild = 0;
 
-function safeCovPeriodMs(satrec) {
-  const no = satrec?.no;
-  if (!Number.isFinite(no) || no <= 0) return 90 * 60 * 1000;
-  const ms = ((2 * Math.PI) / no) * 60000;
-  return Number.isFinite(ms) && ms >= 60 * 1000 ? ms : 90 * 60 * 1000;
-}
-
 function covPeriodMs(satrec) {
-  return safeCovPeriodMs(satrec);
+  return ((2 * Math.PI) / satrec.no) * 60000;
 }
 
 function covGroundDistKm(a, b) {
@@ -805,23 +796,21 @@ function rebuildCoverageLines(lineObj, quads) {
   lineObj.geometry = geom;
 }
 
-function updateCoverage(simStepMs) {
+function updateCoverage() {
   const nowMs = state.simTime.getTime();
-  const canAccumulate = state.playing && state.speed > 0 && simStepMs > 0 && simStepMs <= COV_MAX_GAP_MS;
   sats.forEach((sat) => {
     if (!sat.covLine) return;
-    const win = safeCovPeriodMs(sat.satrec);
-    sat.covPeriodMs = win;
+    const win = sat.covPeriodMs;
     const before = sat.covSamples.length;
-    let kept = sat.covSamples.filter((s) => s.t <= nowMs && s.t >= nowMs - win);
-    if (kept.length > COV_MAX_SAMPLES) kept = kept.slice(kept.length - COV_MAX_SAMPLES);
-    if (kept.length !== before) { sat.covSamples = kept; sat.covDirty = true; }
-    if (!canAccumulate || simStepMs > COV_MAX_GAP_MS) sat.covPrev = null;
-    else if (sat.covPrev && (sat.covPrev.t > nowMs || nowMs - sat.covPrev.t > COV_MAX_GAP_MS)) {
+    if (before > 0) {
+      const kept = sat.covSamples.filter((s) => s.t <= nowMs && s.t >= nowMs - win);
+      if (kept.length !== before) { sat.covSamples = kept; sat.covDirty = true; }
+    }
+    if (sat.covPrev && (sat.covPrev.t > nowMs || nowMs - sat.covPrev.t > COV_MAX_GAP_MS)) {
       sat.covPrev = null;
     }
     const hidden = state.hiddenSats.has(sat.norad);
-    if (!hidden && canAccumulate) {
+    if (!hidden) {
       const pv = satellite.propagate(sat.satrec, state.simTime);
       if (pv.position && pv.velocity) {
         const gmst = satellite.gstime(state.simTime);
@@ -841,9 +830,6 @@ function updateCoverage(simStepMs) {
               t: nowMs,
               corners: footSquareCorners(lat, lon, az, gd.height),
             });
-            if (sat.covSamples.length > COV_MAX_SAMPLES) {
-              sat.covSamples = sat.covSamples.slice(-COV_MAX_SAMPLES);
-            }
             sat.covPrev = { t: nowMs, lat, lon };
             sat.covDirty = true;
           }
@@ -1074,12 +1060,9 @@ function updateLabels() {
 
 /* ── 主循环 ── */
 function tick(deltaRealMs) {
-  const frameDelta = Math.min(Math.max(deltaRealMs, 0), MAX_FRAME_DELTA_MS);
-  const prevSimMs = state.simTime.getTime();
   if (state.playing) {
-    state.simTime = new Date(prevSimMs + frameDelta * state.speed);
+    state.simTime = new Date(state.simTime.getTime() + deltaRealMs * state.speed);
   }
-  const simStepMs = Math.abs(state.simTime.getTime() - prevSimMs);
   document.getElementById('clock').textContent = state.simTime.toISOString().replace('T', ' ').replace('.000Z', ' UTC');
   updateSun(state.simTime);
   const gmst = satellite.gstime(state.simTime);
@@ -1096,9 +1079,9 @@ function tick(deltaRealMs) {
 
   updateOrbitLines(gmst);
   updateFootprints();
-  updateCoverage(simStepMs);
+  updateCoverage();
 
-  if ((frame & 31) === 0) updatePanel();
+  if ((frame & 15) === 0) updatePanel();
   frame++;
 
   controls.update();
@@ -1268,7 +1251,7 @@ function applyLiveTle(tleMap) {
     sat.satrec = rec;
     sat.l1 = tle.l1;
     sat.l2 = tle.l2;
-    if (sat.covLine) sat.covPeriodMs = safeCovPeriodMs(sat.satrec);
+    if (sat.covPeriodMs) sat.covPeriodMs = covPeriodMs(sat.satrec);
     n++;
   });
   planes.forEach((p) => { p.pathBuiltAt = 0; initPlaneOrbit(p); });
