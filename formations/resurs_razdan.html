@@ -266,6 +266,12 @@ function geodeticToVector3(latDeg, lonDeg, altitudeKm, scale) {
   return { x: r * cosLat * Math.cos(lon), y: r * Math.sin(lat), z: -r * cosLat * Math.sin(lon) };
 }
 
+/** 绕 Y 轴旋转（与 Three.js Object3D.rotation.y 同向） */
+function rotateYVec(v, angle) {
+  const c = Math.cos(angle), s = Math.sin(angle);
+  return { x: v.x * c + v.z * s, y: v.y, z: -v.x * s + v.z * c };
+}
+
 /** NOAA simplified solar position (GML solareqns.PDF) + Wikipedia subsolar point */
 function utcDecimalHours(date) {
   return date.getUTCHours() + date.getUTCMinutes() / 60 + date.getUTCSeconds() / 3600 + date.getUTCMilliseconds() / 3600000;
@@ -333,7 +339,7 @@ function addGeoBoundaryLayer(data, color, opacity, altitudeKm) {
     color, transparent: true, opacity, depthWrite: false, depthTest: true,
   }));
   line.renderOrder = 4;
-  scene.add(line);
+  globeGroup.add(line);
 }
 
 function addGeoBoundaries() {
@@ -411,7 +417,7 @@ const state = {
   hiddenSats: new Set(),
 };
 
-let scene, camera, renderer, controls, earth, sunLight;
+let scene, camera, renderer, controls, earth, sunLight, globeGroup;
 let sats = [];
 let planes = [];
 let frame = 0;
@@ -501,7 +507,7 @@ function buildOrbitLines() {
     line.frustumCulled = false;
     scene.add(line);
     p.orbitLine = line;
-    p.eciPath = new Float32Array(PATH_N * 3); // 惯性系路径, 每帧随 gmst 旋转
+    p.eciPath = new Float32Array(PATH_N * 3); // 惯性系路径, 地球自转时轨道线保持惯性
     p.pathBuiltAt = 0;
   });
 }
@@ -523,7 +529,7 @@ function rebuildOrbitPath(p) {
   return true;
 }
 
-function updateOrbitLines(gmst) {
+function updateOrbitLines() {
   planes.forEach((p) => {
     p.orbitLine.visible = state.showOrbitLines && planeHasVisibleSat(p);
     if (!p.orbitLine.visible) return;
@@ -532,7 +538,7 @@ function updateOrbitLines(gmst) {
     }
     const arr = p.orbitLine.geometry.attributes.position.array;
     for (let i = 0; i < p.eciPath.length; i += 3) {
-      const d = eciToDisplay({ x: p.eciPath[i], y: p.eciPath[i + 1], z: p.eciPath[i + 2] }, gmst);
+      const d = eciToDisplay({ x: p.eciPath[i], y: p.eciPath[i + 1], z: p.eciPath[i + 2] }, 0);
       arr[i] = d.x; arr[i + 1] = d.y; arr[i + 2] = d.z;
     }
     p.orbitLine.geometry.attributes.position.needsUpdate = true;
@@ -662,7 +668,7 @@ function buildFootprints() {
       mesh.visible = false;
       mesh.frustumCulled = false;
       mesh.renderOrder = additive ? 6 : 5;
-      scene.add(mesh);
+      globeGroup.add(mesh);
       return mesh;
     };
     const mkOutline = (opacity) => {
@@ -672,7 +678,7 @@ function buildFootprints() {
       line.visible = false;
       line.frustumCulled = false;
       line.renderOrder = 6;
-      scene.add(line);
+      globeGroup.add(line);
       return line;
     };
     sat.footMesh = mkQuad(0.42, true);   // 中间 12km 幅宽高亮条带
@@ -685,7 +691,7 @@ function buildFootprints() {
     sat.footRays.visible = false;
     sat.footRays.frustumCulled = false;
     sat.footRays.renderOrder = 6;
-    scene.add(sat.footRays);
+    globeGroup.add(sat.footRays);
   });
 }
 
@@ -797,7 +803,7 @@ function buildCoverage() {
     line.visible = false;
     line.frustumCulled = false;
     line.renderOrder = 2;
-    scene.add(line);
+    globeGroup.add(line);
     sat.covLine = line;
   });
 }
@@ -927,6 +933,9 @@ function analyzePlane(plane, date) {
 function initEarth() {
   const tex = createStylizedEarthTexture();
 
+  globeGroup = new THREE.Group();
+  scene.add(globeGroup);
+
   earth = new THREE.Mesh(
     new THREE.SphereGeometry(1, 256, 192),
     new THREE.MeshStandardMaterial({
@@ -938,9 +947,9 @@ function initEarth() {
       polygonOffsetUnits: 1,
     })
   );
-  scene.add(earth);
+  globeGroup.add(earth);
   addGeoBoundaries();
-  scene.add(
+  globeGroup.add(
     new THREE.Mesh(
       new THREE.SphereGeometry(1.011, 160, 112),
       new THREE.MeshBasicMaterial({ color: 0x4a90d9, transparent: true, opacity: 0.10, side: THREE.BackSide, depthWrite: false })
@@ -953,9 +962,12 @@ function initEarth() {
 }
 
 function updateSun(date) {
+  const gmst = satellite.gstime(date);
+  globeGroup.rotation.y = gmst;
   const sub = subsolarPoint(date);
   const v = geodeticToVector3(sub.lat, sub.lon, 0, SCALE);
-  sunLight.position.set(v.x * 8, v.y * 8, v.z * 8);
+  const sun = rotateYVec(v, -gmst);
+  sunLight.position.set(sun.x * 8, sun.y * 8, sun.z * 8);
   sunLight.target.updateMatrixWorld();
 }
 
@@ -1058,7 +1070,11 @@ function focusGroup() {
   const plane = planes.reduce((a, b) => (a.members.length >= b.members.length ? a : b), planes[0]);
   if (!plane) return;
   const center = new THREE.Vector3();
-  plane.members.forEach((s) => center.add(s.marker.position));
+  const wp = new THREE.Vector3();
+  plane.members.forEach((s) => {
+    s.marker.getWorldPosition(wp);
+    center.add(wp);
+  });
   center.multiplyScalar(1 / plane.members.length);
   const an = analyzePlane(plane, state.simTime);
   if (an && center.length() > 0.2) {
@@ -1083,7 +1099,8 @@ function updateLabels() {
   };
   sats.forEach((sat) => {
     if (!state.showLabels || state.hiddenSats.has(sat.norad)) { sat.labelEl.style.display = 'none'; return; }
-    project(sat.marker.position, sat.labelEl);
+    sat.marker.getWorldPosition(tmp);
+    project(tmp, sat.labelEl);
   });
 }
 
@@ -1094,7 +1111,6 @@ function tick(deltaRealMs) {
   }
   document.getElementById('clock').textContent = state.simTime.toISOString().replace('T', ' ').replace('.000Z', ' UTC');
   updateSun(state.simTime);
-  const gmst = satellite.gstime(state.simTime);
 
   sats.forEach((sat) => {
     const hidden = state.hiddenSats.has(sat.norad);
@@ -1106,7 +1122,7 @@ function tick(deltaRealMs) {
     sat.marker.position.set(v.x, v.y, v.z);
   });
 
-  updateOrbitLines(gmst);
+  updateOrbitLines();
   updateFootprints();
   updateCoverage();
 
@@ -1324,7 +1340,7 @@ async function main() {
   data.satellites.forEach((d) => {
     const satrec = satellite.twoline2satrec(d.l1, d.l2);
     const marker = new THREE.Mesh(new THREE.SphereGeometry(0.0075, 8, 8), new THREE.MeshBasicMaterial({ color: 0xffffff }));
-    scene.add(marker);
+    globeGroup.add(marker);
     const labelEl = document.createElement('div');
     labelEl.className = 'sat-label comb-label';
     labelEl.textContent = d.label;
