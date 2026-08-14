@@ -1184,7 +1184,8 @@ function ommToTle(o) {
   const id = String((Number(o.NORAD_CAT_ID) || 0) % 100000).padStart(5, '0');
   const obj = objectIdTleField(o.OBJECT_ID);
   const yy = String(utcDate(o.EPOCH).getUTCFullYear()).slice(-2);
-  const l1 = `1 ${id}U ${obj}${yy}${epochDay(o.EPOCH)}  .00000000  00000-0 ${expField(Number(o.BSTAR))} 0  999`;
+  // TLE L1 col 10-17 = intl desig (8 chars), col 18 = space, col 19-32 = epoch
+  const l1 = `1 ${id}U ${obj} ${yy}${epochDay(o.EPOCH)}  .00000000  00000-0 ${expField(Number(o.BSTAR))} 0  999`;
   const ecc = String(Math.round(Number(o.ECCENTRICITY) * 1e7)).padStart(7, '0').slice(-7);
   const f = (n) => Number(n).toFixed(4).padStart(8, ' ');
   const l2 = `2 ${id} ${f(o.INCLINATION)} ${f(o.RA_OF_ASC_NODE)} ${ecc} ${f(o.ARG_OF_PERICENTER)} ${f(o.MEAN_ANOMALY)} ${Number(o.MEAN_MOTION).toFixed(8).padStart(11, ' ')}${String(o.REV_AT_EPOCH || 0).padStart(5, ' ')}`;
@@ -1250,7 +1251,7 @@ function applyLiveTle(tleMap) {
     if (!omm) return;
     const tle = ommToTle(omm);
     const rec = satellite.twoline2satrec(tle.l1, tle.l2);
-    if (!rec) return;
+    if (!rec || rec.error || !Number.isFinite(rec.no) || rec.no <= 0) return;
     sat.satrec = rec;
     sat.l1 = tle.l1;
     sat.l2 = tle.l2;
